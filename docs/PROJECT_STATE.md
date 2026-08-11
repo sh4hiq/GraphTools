@@ -3,21 +3,24 @@
 > This file is overwritten (not appended) at the end of each working session.
 
 ## Current Focus
-- Completed project-memory-management-graph Initialize + Bootstrap; briefly upgraded to
-  net10.0, then reverted to net8.0 after root-causing the launch failure as a `DOTNET_ROOT`
-  environment override (from VS Insiders) rather than a real runtime gap; added
-  `tools/Invoke-GraphTools.ps1` wrapper to work around it. Full graph rebuilt (97 nodes, 287 edges).
+- Re-synced project-memory-management-graph skill from v2 to v9 (Bootstrap re-run triggered by
+  Begin Session's version-staleness gate). Split `docs/KEY_FLOWS.md` out of `CODE_SUMMARY.md`,
+  regenerated the "Persistent Project Memory" section in `.github/copilot-instructions.md`
+  (version marker now v9), rebuilt the full graph (99 nodes, 299 edges), and confirmed the
+  build still succeeds. `docs/domain-lookup-patterns.md` and `docs/KNOWN_OPEN_FINDINGS.md`
+  remain not-yet-created (neither has been triggered yet per their own creation rules). Also
+  fixed a recurring "Select an account" push prompt by confirming/re-setting `origin`'s URL to
+  embed the username (`https://citsuresh@github.com/citsuresh/GraphTools.git`).
 
 ## Open Tasks / Bugs
-- None identified. (Previously deferred: updating SKILL.md's GraphTools invocation guidance to
-  use the wrapper script — done; skill bumped to v2, this project's marker updated to match.)
+- None identified. (If the "Select an account" push prompt still recurs despite the
+  username-embedded remote URL, the next step would be clearing the Windows/Git Credential
+  Manager cache for github.com.)
 
 ## Recently Changed Files
-- `.github/prompts/begin-session.prompt.md`, `bootstrap.prompt.md`, `end-session.prompt.md`
 - `.github/copilot-instructions.md` (Persistent Project Memory section regenerated; skill
-  version marker added)
-- `GraphTools.Core/GraphTools.Core.csproj`, `GraphTools.Builder/GraphTools.Builder.csproj`,
-  `GraphTools.Query/GraphTools.Query.csproj` (net8.0 -> net10.0 -> reverted to net8.0)
-- `tools/Invoke-GraphTools.ps1` (new: clears `DOTNET_ROOT` before invoking Builder/Query exes)
-- `docs/full-graph.json`, `docs/project-dependencies.json` (rebuilt under net8.0 via wrapper)
-- `docs/DESIGN_DECISIONS.md` (net10.0 upgrade decision, then reversal, both appended)
+  version marker bumped 2 -> 9)
+- `docs/KEY_FLOWS.md` (new: migrated Key Flows entries out of `CODE_SUMMARY.md`)
+- `docs/CODE_SUMMARY.md` (Key Flows section replaced with pointer to `KEY_FLOWS.md`)
+- `docs/full-graph.json`, `docs/project-dependencies.json` (full rebuild, 99 nodes/299 edges)
+- git remote `origin` URL (re-confirmed username-embedded HTTPS URL; no file changed, config only)

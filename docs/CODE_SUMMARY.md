@@ -33,9 +33,4 @@ graph LR
 |---|---|---|
 | `Program` (top-level) | GraphTools.Query/Program.cs | CLI entry point: loads a graph JSON file and answers queries (`--symbol`, `--direction callers|callees`, `--list-symbols --project`). |
 
-## Key Flows
-
-- **Full build**: `Builder.Program` -> `WorkspaceLoader.LoadSolutionAsync` -> `GraphExtractor.ExtractProjectAsync` (per project) -> `JsonHelper.WriteToFile` (full-graph.json) -> `ProjectDependencyExtractor.Extract` -> `JsonHelper.WriteToFile` (project-dependencies.json).
-- **Incremental build**: `Builder.Program` -> load existing graph -> detect changed files (mtime > `GeneratedAt`, excluding `PathUtils.IsInBuildOutputFolder`) -> re-extract only affected projects -> merge nodes/edges by file path -> write merged graph.
-- **Diff**: `Builder.Program --diff` -> load two `FullGraph` files -> compare `Nodes`/`Edges` by id/key -> produce `DiffReport` (added/removed/modified).
-- **Query**: `Query.Program` -> `JsonHelper.ReadFromFile<FullGraph>` -> filter `Nodes`/`Edges` by symbol id, direction, or project -> print JSON result.
+See `docs/KEY_FLOWS.md` for traced end-to-end call flows.
