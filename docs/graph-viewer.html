@@ -455,9 +455,9 @@
         <label style="display:flex; align-items:center; gap:4px;">
           Call depth:
           <select id="callDepth">
-            <option value="1">1</option>
+            <option value="1" selected>1</option>
             <option value="2">2</option>
-            <option value="3" selected>3</option>
+            <option value="3">3</option>
             <option value="4">4</option>
             <option value="5">5</option>
             <option value="10">10</option>
@@ -541,20 +541,152 @@
 
   <script>
     let fullGraph = null, deps = null;
-    let view = {level: 'projects', project: null};
+    let view = { level: 'projects', project: null };
     let methodHistory = [];
     let methodHistoryIndex = -1;
 
+    let methodNodeById = new Map();
+    let callsByMethodIndex = new Map();
+
+    function buildMethodIndexes() {
+      methodNodeById = new Map();
+      callsByMethodIndex = new Map();
+
+      for (const node of fullGraph.nodes || []) {
+        methodNodeById.set(node.id, node);
+      }
+
+      for (const edge of fullGraph.edges || []) {
+        if (edge.type !== 'calls') continue;
+
+        if (!callsByMethodIndex.has(edge.sourceId)) {
+          callsByMethodIndex.set(edge.sourceId, []);
+        }
+
+        callsByMethodIndex.get(edge.sourceId).push(edge.targetId);
+      }
+
+      console.info('Method indexes built', {
+        nodes: methodNodeById.size,
+        methodsWithCalls: callsByMethodIndex.size
+      });
+    }
+
+    const graphIndexes = {
+      nodeById: new Map(),
+      typeNodesByProject: new Map(),
+      memberCountByType: new Map(),
+      typeEdgesByProject: new Map()
+    };
+
+    function buildGraphIndexes(graph) {
+      console.time("GraphTools: build indexes");
+
+      const { nodeById, typeNodesByProject,
+        memberCountByType, typeEdgesByProject } = graphIndexes;
+
+      nodeById.clear();
+      typeNodesByProject.clear();
+      memberCountByType.clear();
+      typeEdgesByProject.clear();
+
+      const typeKinds = new Set(["class", "interface", "enum"]);
+
+      // Index every symbol once.
+      for (const node of graph.nodes || []) {
+        nodeById.set(node.id, node);
+
+        if (typeKinds.has(node.kind)) {
+          if (!typeNodesByProject.has(node.project)) {
+            typeNodesByProject.set(node.project, []);
+          }
+
+          typeNodesByProject.get(node.project).push(node);
+        }
+
+        if (node.containingType) {
+          memberCountByType.set(
+            node.containingType,
+            (memberCountByType.get(node.containingType) || 0) + 1
+          );
+        }
+      }
+
+      function owningType(id) {
+        const node = nodeById.get(id);
+        if (!node) return null;
+
+        return typeKinds.has(node.kind)
+          ? node.id
+          : node.containingType || null;
+      }
+
+      // Aggregate type-level relationships once, instead of on every click.
+      for (const edge of graph.edges || []) {
+        const sourceTypeId = owningType(edge.sourceId);
+        const targetTypeId = owningType(edge.targetId);
+
+        if (!sourceTypeId || !targetTypeId ||
+          sourceTypeId === targetTypeId) {
+          continue;
+        }
+
+        const sourceType = nodeById.get(sourceTypeId);
+        const targetType = nodeById.get(targetTypeId);
+
+        if (!sourceType || !targetType) continue;
+
+        const projects = new Set([
+          sourceType.project,
+          targetType.project
+        ]);
+
+        const key = sourceTypeId + "|" + targetTypeId;
+
+        for (const project of projects) {
+          if (!project) continue;
+
+          if (!typeEdgesByProject.has(project)) {
+            typeEdgesByProject.set(project, new Map());
+          }
+
+          const edgeMap = typeEdgesByProject.get(project);
+
+          if (!edgeMap.has(key)) {
+            edgeMap.set(key, {
+              source: sourceTypeId,
+              target: targetTypeId,
+              count: 0,
+              types: new Set()
+            });
+          }
+
+          const record = edgeMap.get(key);
+          record.count++;
+          record.types.add(edge.type);
+        }
+      }
+
+      console.timeEnd("GraphTools: build indexes");
+
+      console.info("GraphTools indexes ready", {
+        symbols: nodeById.size,
+        projects: typeNodesByProject.size,
+        typeRelationships: [...typeEdgesByProject.values()]
+          .reduce((total, map) => total + map.size, 0)
+      });
+    }
+
     function initTheme() {
       let saved = null;
-      try {saved = localStorage.getItem('graph-viewer-theme');} catch (e) { /* file:// may block storage */}
+      try { saved = localStorage.getItem('graph-viewer-theme'); } catch (e) { /* file:// may block storage */ }
       const systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
       applyTheme(saved || (systemDark ? 'dark' : 'light'));
       document.getElementById('themeToggle').onclick = () => {
         const current = document.documentElement.getAttribute('data-theme');
         const next = current === 'dark' ? 'light' : 'dark';
         applyTheme(next);
-        try {localStorage.setItem('graph-viewer-theme', next);} catch (e) { /* ignore */}
+        try { localStorage.setItem('graph-viewer-theme', next); } catch (e) { /* ignore */ }
       };
     }
     function applyTheme(theme) {
@@ -613,8 +745,8 @@
     async function tryAutoLoad() {
       try {
         const [g, d] = await Promise.all([
-          fetch('full-graph.json').then(r => {if (!r.ok) throw new Error(); return r.json();}),
-          fetch('project-dependencies.json').then(r => {if (!r.ok) throw new Error(); return r.json();})
+          fetch('full-graph.json').then(r => { if (!r.ok) throw new Error(); return r.json(); }),
+          fetch('project-dependencies.json').then(r => { if (!r.ok) throw new Error(); return r.json(); })
         ]);
         fullGraph = g; deps = d;
         startApp();
@@ -665,7 +797,7 @@
     function handleDroppedFile(file) {
       file.text().then(t => {
         let parsed;
-        try {parsed = JSON.parse(t);} catch (e) {
+        try { parsed = JSON.parse(t); } catch (e) {
           alert(`${file.name} isn't valid JSON.`); return;
         }
         if (Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) {
@@ -688,12 +820,12 @@
     function wireDropzone() {
       const zone = document.getElementById('dropzone');
       ['dragenter', 'dragover'].forEach(evt =>
-        zone.addEventListener(evt, (e) => {e.preventDefault(); zone.classList.add('dragover');}));
+        zone.addEventListener(evt, (e) => { e.preventDefault(); zone.classList.add('dragover'); }));
       ['dragleave', 'drop'].forEach(evt =>
-        zone.addEventListener(evt, (e) => {e.preventDefault(); zone.classList.remove('dragover');}));
+        zone.addEventListener(evt, (e) => { e.preventDefault(); zone.classList.remove('dragover'); }));
       zone.addEventListener('drop', (e) => {
         const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.json'));
-        if (files.length === 0) {alert('Drop .json files only.'); return;}
+        if (files.length === 0) { alert('Drop .json files only.'); return; }
         files.forEach(handleDroppedFile);
       });
     }
@@ -706,19 +838,24 @@
       }
       gInput.addEventListener('change', () => {
         const f = gInput.files[0]; if (!f) return;
-        f.text().then(t => {fullGraph = JSON.parse(t); checkBoth();});
+        f.text().then(t => { fullGraph = JSON.parse(t); checkBoth(); });
       });
       dInput.addEventListener('change', () => {
         const f = dInput.files[0]; if (!f) return;
-        f.text().then(t => {deps = JSON.parse(t); checkBoth();});
+        f.text().then(t => { deps = JSON.parse(t); checkBoth(); });
       });
     }
 
     function startApp() {
       document.getElementById('loadState').style.display = 'none';
       document.getElementById('app').style.display = 'block';
+
       document.getElementById('subtitle').textContent =
         `${fullGraph.nodes.length.toLocaleString()} symbols, ${fullGraph.edges.length.toLocaleString()} references across ${deps.projects.length} project(s)`;
+
+      buildGraphIndexes(fullGraph);
+      buildMethodIndexes();
+
       renderProjectsView();
     }
 
@@ -796,7 +933,7 @@
 
     // ---- Level 0: project-to-project dependency graph ----
     function renderProjectsView() {
-      view = {level: 'projects', project: null};
+      view = { level: 'projects', project: null };
       renderCrumb();
       clearStage();
       const names = deps.projects.map(p => p.name);
@@ -815,7 +952,7 @@
         sizeMetric: filesByProject.has(p.name) ? filesByProject.get(p.name).size : 0
       }));
       const links = [];
-      deps.projects.forEach(p => (p.references || []).forEach(r => links.push({source: p.name, target: r})));
+      deps.projects.forEach(p => (p.references || []).forEach(r => links.push({ source: p.name, target: r })));
 
       runForceGraph(nodes, links, (d) => renderProjectTypesView(d.id), (d) => `${d.name}\n(click to view internal types)`);
     }
@@ -828,69 +965,87 @@
         o.value = n; o.textContent = n.replace(/^.*?\./, '');
         sel.appendChild(o);
       });
-      sel.onchange = () => {if (sel.value) renderProjectTypesView(sel.value);};
+      sel.onchange = () => { if (sel.value) renderProjectTypesView(sel.value); };
     }
 
     // ---- Level 1: type-level graph within one project ----
+
     function renderProjectTypesView(projectName) {
-      view = {level: 'types', project: projectName};
+      view = { level: 'types', project: projectName };
+
       renderCrumb();
       clearStage();
+
       populateProjectJump(deps.projects.map(p => p.name));
       document.getElementById('projectJump').value = projectName;
 
-      const typeKinds = new Set(['class', 'interface', 'enum']);
-      const nodeById = new Map(fullGraph.nodes.map(n => [n.id, n]));
-      const nodeIds = new Set(nodeById.keys());
+      const {
+        nodeById,
+        typeNodesByProject,
+        memberCountByType,
+        typeEdgesByProject
+      } = graphIndexes;
 
-      function owningType(id) {
-        const n = nodeById.get(id);
-        if (!n) return null;
-        if (typeKinds.has(n.kind)) return n.id;
-        return n.containingType || null;
-      }
+      // Reuse the project-specific type index.
+      const typeNodes = typeNodesByProject.get(projectName) || [];
 
-      const typeNodes = fullGraph.nodes.filter(n => typeKinds.has(n.kind) && n.project === projectName);
       renderLegend([projectName]);
 
-      const edgeMap = new Map();
-      fullGraph.edges.forEach(e => {
-        if (!nodeIds.has(e.sourceId) || !nodeIds.has(e.targetId)) return;
-        const st = owningType(e.sourceId), tt = owningType(e.targetId);
-        if (!st || !tt || st === tt) return;
-        const sN = nodeById.get(st), tN = nodeById.get(tt);
-        if (sN.project !== projectName && tN.project !== projectName) return;
-        const key = st + '|' + tt;
-        if (!edgeMap.has(key)) edgeMap.set(key, {count: 0, types: new Set()});
-        const rec = edgeMap.get(key);
-        rec.count += 1;
-        rec.types.add(e.type);
-      });
+      // Reuse the relationships aggregated during graph loading.
+      const edgeMap = typeEdgesByProject.get(projectName) || new Map();
 
-      const nodeSet = new Map(typeNodes.map(n => [n.id, n]));
-      edgeMap.forEach((rec, key) => {
-        const [s, t] = key.split('|');
-        [s, t].forEach(id => {if (!nodeSet.has(id) && nodeById.has(id)) nodeSet.set(id, nodeById.get(id));});
-      });
+      // Include types from other projects when they are connected
+      // to the selected project's types.
+      const nodeSet = new Map(
+        typeNodes.map(node => [node.id, node])
+      );
 
-      const nodes = Array.from(nodeSet.values()).map(n => ({
-        id: n.id, name: n.name, project: n.project, kind: n.kind,
-        isAbstract: !!n.isAbstract, isStatic: !!n.isStatic, isSealed: !!n.isSealed,
-        sizeMetric: fullGraph.nodes.filter(m => m.containingType === n.id).length
+      for (const record of edgeMap.values()) {
+        const source = nodeById.get(record.source);
+        const target = nodeById.get(record.target);
+
+        if (source) nodeSet.set(source.id, source);
+        if (target) nodeSet.set(target.id, target);
+      }
+
+      const nodes = Array.from(nodeSet.values()).map(node => ({
+        id: node.id,
+        name: node.name,
+        project: node.project,
+        kind: node.kind,
+
+        isAbstract: !!node.isAbstract,
+        isStatic: !!node.isStatic,
+        isSealed: !!node.isSealed,
+
+        // O(1) lookup instead of scanning all symbols for every type.
+        sizeMetric: memberCountByType.get(node.id) || 0
       }));
-      const links = Array.from(edgeMap.entries()).map(([key, rec]) => {
-        const [s, t] = key.split('|');
-        return {source: s, target: t, count: rec.count, types: Array.from(rec.types)};
+
+      const links = Array.from(edgeMap.values()).map(record => ({
+        source: record.source,
+        target: record.target,
+        count: record.count,
+        types: Array.from(record.types)
+      }));
+
+      console.info("GraphTools: rendering project", {
+        project: projectName,
+        nodes: nodes.length,
+        edges: links.length
       });
 
-      runForceGraph(nodes, links,
-        (d) => showMemberPanel(d.id),
-        (d) => `${d.name}\n(click to see members)`,
-        projectName);
+      runForceGraph(
+        nodes,
+        links,
+        d => showMemberPanel(d.id),
+        d => `${d.name}\n(click to see members)`,
+        projectName
+      );
     }
 
     function accessSymbol(acc) {
-      const map = {public: '+', private: '-', protected: '#', internal: '~'};
+      const map = { public: '+', private: '-', protected: '#', internal: '~' };
       return map[acc] || (acc ? acc[0].toUpperCase() : '?');
     }
 
@@ -1038,11 +1193,16 @@
 
 
     function renderMethodCallGraph(methodId, maxDepth) {
-      const nodeById = new Map(
-        fullGraph.nodes.map(n => [n.id, n])
-      );
+      console.time("GraphTools: render method call graph");
 
-      const root = nodeById.get(methodId);
+      console.info("GraphTools: rendering method", {
+        methodId,
+        maxDepth,
+        indexedMethods: methodNodeById.size,
+        methodsWithCalls: callsByMethodIndex.size
+      });
+
+      const root = methodNodeById.get(methodId);
 
       if (!root) {
         console.warn('Method not found:', methodId);
@@ -1075,17 +1235,6 @@
        *    +--> method B
        *    +--> method C
        */
-      const callsByMethod = new Map();
-
-      fullGraph.edges
-        .filter(e => e.type === 'calls')
-        .forEach(e => {
-          if (!callsByMethod.has(e.sourceId)) {
-            callsByMethod.set(e.sourceId, []);
-          }
-
-          callsByMethod.get(e.sourceId).push(e.targetId);
-        });
 
       const visibleNodes = new Map();
       const visibleLinks = [];
@@ -1113,10 +1262,10 @@
           continue;
         }
 
-        const callees = callsByMethod.get(current.id) || [];
+        const callees = callsByMethodIndex.get(current.id) || [];
 
         for (const targetId of callees) {
-          const target = nodeById.get(targetId);
+          const target = methodNodeById.get(targetId);
 
           if (!target) {
             continue;
@@ -1176,7 +1325,7 @@
         isAbstract: !!n.isAbstract,
         isStatic: !!n.isStatic,
         isSealed: !!n.isSealed,
-        sizeMetric: (callsByMethod.get(n.id) || []).length
+        sizeMetric: (callsByMethodIndex.get(n.id) || []).length
       }));
 
       runForceGraph(
@@ -1193,7 +1342,7 @@
         },
 
         d => {
-          const called = callsByMethod.get(d.id) || [];
+          const called = callsByMethodIndex.get(d.id) || [];
 
           return `${d.name}\n${called.length} direct call(s)`;
         },
@@ -1211,6 +1360,7 @@
       renderNamespaceSummary(methodId, maxDepth);
 
       renderProjectsList(methodId, maxDepth);
+      console.timeEnd("GraphTools: render method call graph");
     }
 
     const namespaceColors = new Map();
@@ -1222,23 +1372,21 @@
     ];
 
     function getMethodNamespace(method) {
-      const nodeById = new Map(
-        fullGraph.nodes.map(n => [n.id, n])
-      );
+      const owner = method.containingType
+        ? methodNodeById.get(method.containingType)
+        : null;
 
-      const owner = nodeById.get(method.containingType);
-
-      // Prefer the containing type's fully qualified ID.
       if (owner?.id) {
-        const typeId = owner.id;
-        const lastDot = typeId.lastIndexOf(".");
+        const lastDot = owner.id.lastIndexOf(".");
+
         return lastDot > 0
-          ? typeId.substring(0, lastDot)
+          ? owner.id.substring(0, lastDot)
           : "(global namespace)";
       }
 
-      // Fallback for graphs without a containing type.
-      if (method.namespace) return method.namespace;
+      if (method.namespace) {
+        return method.namespace;
+      }
 
       return "(namespace non disponibile)";
     }
@@ -1261,48 +1409,39 @@
       const list = document.getElementById("projectsList");
       const count = document.getElementById("projectsListCount");
 
-      const nodeById = new Map(
-        fullGraph.nodes.map(n => [n.id, n])
-      );
-
-      const callsByMethod = new Map();
-
-      fullGraph.edges
-        .filter(e => e.type === "calls")
-        .forEach(e => {
-          if (!callsByMethod.has(e.sourceId)) {
-            callsByMethod.set(e.sourceId, []);
-          }
-
-          callsByMethod.get(e.sourceId).push(e.targetId);
-        });
-
       const projects = new Set();
       const visited = new Set();
+      const stack = [{ id: rootMethodId, depth: 0 }];
 
-      function visit(methodId, depth) {
-        if (visited.has(methodId) || depth > maxDepth) return;
+      while (stack.length) {
+        const { id, depth } = stack.pop();
 
-        visited.add(methodId);
+        if (visited.has(id) || depth > maxDepth) continue;
+        visited.add(id);
 
-        const method = nodeById.get(methodId);
-        if (!method) return;
+        const method = methodNodeById.get(id);
+        if (!method) continue;
 
-        const owner = nodeById.get(method.containingType);
+        const owner = method.containingType
+          ? methodNodeById.get(method.containingType)
+          : null;
+
         const project = method.project || owner?.project;
 
         if (project) {
           projects.add(project);
         }
 
-        if (depth === maxDepth) return;
+        if (depth < maxDepth) {
+          const children = callsByMethodIndex.get(id) || [];
 
-        for (const childId of callsByMethod.get(methodId) || []) {
-          visit(childId, depth + 1);
+          for (const childId of children) {
+            if (!visited.has(childId)) {
+              stack.push({ id: childId, depth: depth + 1 });
+            }
+          }
         }
       }
-
-      visit(rootMethodId, 0);
 
       const sortedProjects = [...projects].sort((a, b) =>
         a.localeCompare(b)
@@ -1315,7 +1454,7 @@
       if (!sortedProjects.length) {
         const empty = document.createElement("div");
         empty.className = "call-tree-empty";
-        empty.textContent = "Nessun progetto disponibile.";
+        empty.textContent = "No projects available.";
         list.appendChild(empty);
         return;
       }
@@ -1341,81 +1480,67 @@
       const list = document.getElementById("namespaceSummary");
       const count = document.getElementById("namespaceSummaryCount");
 
-      const nodeById = new Map(
-        fullGraph.nodes.map(n => [n.id, n])
-      );
-
-      const callsByMethod = new Map();
-
-      fullGraph.edges
-        .filter(e => e.type === "calls")
-        .forEach(e => {
-          if (!callsByMethod.has(e.sourceId)) {
-            callsByMethod.set(e.sourceId, []);
-          }
-          callsByMethod.get(e.sourceId).push(e.targetId);
-        });
-
       const namespaces = new Map();
       const visited = new Set();
+      const stack = [{ id: rootMethodId, depth: 0 }];
 
-      function visit(methodId, depth) {
-        if (visited.has(methodId) || depth > maxDepth) return;
+      while (stack.length) {
+        const { id, depth } = stack.pop();
 
-        visited.add(methodId);
+        if (visited.has(id) || depth > maxDepth) continue;
+        visited.add(id);
 
-        const method = nodeById.get(methodId);
-        if (!method) return;
+        const method = methodNodeById.get(id);
+        if (!method) continue;
 
         const namespace = getMethodNamespace(method);
-        const owner = nodeById.get(method.containingType);
+        const owner = method.containingType
+          ? methodNodeById.get(method.containingType)
+          : null;
 
-        // Il progetto viene preso prima dal metodo e poi dal tipo contenitore.
         const project = method.project || owner?.project || "";
 
         if (!namespaces.has(namespace)) {
-          namespaces.set(namespace, {
-            namespace,
-            projects: new Set()
-          });
+          namespaces.set(namespace, new Set());
         }
 
         if (project) {
-          namespaces.get(namespace).projects.add(project);
+          namespaces.get(namespace).add(project);
         }
 
-        if (depth === maxDepth) return;
+        if (depth < maxDepth) {
+          const children = callsByMethodIndex.get(id) || [];
 
-        for (const childId of callsByMethod.get(methodId) || []) {
-          visit(childId, depth + 1);
+          for (const childId of children) {
+            if (!visited.has(childId)) {
+              stack.push({ id: childId, depth: depth + 1 });
+            }
+          }
         }
       }
 
-      visit(rootMethodId, 0);
-
-      const entries = [...namespaces.values()]
-        .sort((a, b) => a.namespace.localeCompare(b.namespace));
+      const entries = [...namespaces.entries()]
+        .sort(([a], [b]) => a.localeCompare(b));
 
       list.replaceChildren();
       panel.style.display = "block";
-
       count.textContent = `${entries.length} namespaces`;
 
       if (!entries.length) {
         const empty = document.createElement("div");
         empty.className = "call-tree-empty";
-        empty.textContent = "No namespace found.";
+        empty.textContent = "No namespaces found.";
         list.appendChild(empty);
         return;
       }
 
-      for (const entry of entries) {
+      for (const [namespace, projects] of entries) {
         const row = document.createElement("div");
         row.className = "call-tree-row";
 
         const dot = document.createElement("span");
         dot.textContent = "●";
-        dot.style.color = namespaceColor(entry.namespace);
+        dot.style.color = namespaceColor(namespace);
         row.appendChild(dot);
 
         const content = document.createElement("div");
@@ -1425,18 +1550,17 @@
 
         const name = document.createElement("span");
         name.className = "call-tree-namespace";
-        name.style.color = namespaceColor(entry.namespace);
-        name.textContent = entry.namespace;
+        name.style.color = namespaceColor(namespace);
+        name.textContent = namespace;
         content.appendChild(name);
-
-        const projects = [...entry.projects].sort();
 
         const projectLabel = document.createElement("span");
         projectLabel.style.fontSize = "11px";
         projectLabel.style.color = "var(--text-secondary)";
-        projectLabel.textContent = projects.length
-          ? `Project: ${projects.join(", ")}`
-          : "No projects available.";
+
+        projectLabel.textContent = projects.size
+          ? `Project: ${[...projects].sort().join(", ")}`
+          : "Project unavailable";
 
         content.appendChild(projectLabel);
         row.appendChild(content);
@@ -1449,36 +1573,11 @@
       const tree = document.getElementById("callTree");
       const summary = document.getElementById("callTreeSummary");
 
-      const nodeById = new Map(
-        fullGraph.nodes.map(n => [n.id, n])
-      );
-
-      const root = nodeById.get(rootMethodId);
+      const root = methodNodeById.get(rootMethodId);
 
       if (!root) {
         panel.style.display = "none";
         return;
-      }
-
-      const callsByMethod = new Map();
-
-      fullGraph.edges
-        .filter(e => e.type === "calls")
-        .forEach(e => {
-          if (!callsByMethod.has(e.sourceId)) {
-            callsByMethod.set(e.sourceId, []);
-          }
-
-          callsByMethod.get(e.sourceId).push(e.targetId);
-        });
-
-      // Deterministic display order.
-      for (const ids of callsByMethod.values()) {
-        ids.sort((a, b) =>
-          (nodeById.get(a)?.name || a).localeCompare(
-            nodeById.get(b)?.name || b
-          )
-        );
       }
 
       tree.replaceChildren();
@@ -1487,9 +1586,13 @@
       const visitedNodes = new Set();
 
       function makeRow(method, depth, path, parent) {
-        const children = callsByMethod.get(method.id) || [];
-        const expandable = depth < maxDepth &&
-          children.some(id => nodeById.has(id) && !path.has(id));
+        const children = callsByMethodIndex.get(method.id) || [];
+
+        const validChildren = depth < maxDepth
+          ? children.filter(id =>
+            methodNodeById.has(id) && !path.has(id)
+          )
+          : [];
 
         const row = document.createElement("div");
         row.className = "call-tree-row";
@@ -1498,16 +1601,15 @@
         const toggle = document.createElement("button");
         toggle.className = "call-tree-toggle";
         toggle.type = "button";
-        toggle.textContent = expandable ? "▼" : "·";
-        toggle.disabled = !expandable;
+        toggle.textContent = validChildren.length ? "▼" : "·";
+        toggle.disabled = validChildren.length === 0;
         row.appendChild(toggle);
 
         const namespace = getMethodNamespace(method);
-        const color = namespaceColor(namespace);
-
         const ns = document.createElement("span");
+
         ns.className = "call-tree-namespace";
-        ns.style.color = color;
+        ns.style.color = namespaceColor(namespace);
         ns.textContent = namespace;
         ns.title = namespace;
         row.appendChild(ns);
@@ -1516,55 +1618,53 @@
         name.className = "call-tree-method";
         name.type = "button";
         name.textContent = method.name;
-        name.title = `${method.id}\nClick per aprire il grafo del metodo`;
+        name.title = method.id;
+
         name.addEventListener("click", () => {
           navigateToMethod(
             method.id,
             Number(document.getElementById("callDepth").value)
           );
         });
-        row.appendChild(name);
 
+        row.appendChild(name);
         parent.appendChild(row);
+
         visitedNodes.add(method.id);
+
+        if (!validChildren.length) return;
 
         const childContainer = document.createElement("div");
         parent.appendChild(childContainer);
 
-        if (expandable) {
-          toggle.addEventListener("click", () => {
-            const hidden = childContainer.style.display === "none";
-            childContainer.style.display = hidden ? "block" : "none";
-            toggle.textContent = hidden ? "▼" : "▶";
-          });
-        }
-
-        if (depth >= maxDepth) return;
+        toggle.addEventListener("click", () => {
+          const hidden = childContainer.style.display === "none";
+          childContainer.style.display = hidden ? "block" : "none";
+          toggle.textContent = hidden ? "▼" : "▶";
+        });
 
         const nextPath = new Set(path);
         nextPath.add(method.id);
 
         for (const childId of children) {
-          const child = nodeById.get(childId);
+          const child = methodNodeById.get(childId);
           if (!child) continue;
 
           if (nextPath.has(childId)) {
+            if (depth >= maxDepth) continue;
+
             const cycle = document.createElement("div");
             cycle.className = "call-tree-row";
             cycle.style.paddingLeft = `${(depth + 1) * 22 + 5}px`;
             cycle.style.color = "var(--text-secondary)";
-            cycle.textContent = `↻ ${child.name} (ciclo)`;
+            cycle.textContent = `↻ ${child.name} (cycle)`;
             childContainer.appendChild(cycle);
             continue;
           }
 
-          makeRow(child, depth + 1, nextPath, childContainer);
-        }
-
-        if (!childContainer.childElementCount) {
-          childContainer.remove();
-          toggle.textContent = "·";
-          toggle.disabled = true;
+          if (depth < maxDepth) {
+            makeRow(child, depth + 1, nextPath, childContainer);
+          }
         }
       }
 
@@ -1573,6 +1673,8 @@
       summary.textContent =
         `${visitedNodes.size} methods · depth ${maxDepth}`;
     }
+
+
 
     function showMethodInfoPanel(method, callCount) {
       const panel = document.getElementById('panel');
@@ -1634,7 +1736,7 @@
     }
 
 
-    function buildMembersByType() {return {};}
+    function buildMembersByType() { return {}; }
 
     // ---- Shared force-directed renderer ----
     function runForceGraph(nodes, links, onClick, tooltipFn, highlightProject) {
@@ -1684,9 +1786,9 @@
       // everything else (calls/uses/overrides) = solid + thin open chevron (Association/Dependency)
       function relationStyle(d) {
         const types = d.types || [];
-        if (types.includes('extends')) return {dash: null, marker: 'arrow-open-strong'};
-        if (types.includes('implements')) return {dash: '5,3', marker: 'arrow-open-strong'};
-        return {dash: null, marker: 'arrow-open'};
+        if (types.includes('extends')) return { dash: null, marker: 'arrow-open-strong' };
+        if (types.includes('implements')) return { dash: '5,3', marker: 'arrow-open-strong' };
+        return { dash: null, marker: 'arrow-open' };
       }
 
       const linkSel = zoomLayer.append('g').selectAll('line')
@@ -1702,8 +1804,8 @@
         const area = Math.PI * r * r;
         let type = d3.symbolCircle;
         let scale = 1;
-        if (d.kind === 'interface') {type = d3.symbolDiamond; scale = 1.5;}
-        else if (d.kind === 'enum') {type = d3.symbolSquare; scale = 1.15;}
+        if (d.kind === 'interface') { type = d3.symbolDiamond; scale = 1.5; }
+        else if (d.kind === 'enum') { type = d3.symbolSquare; scale = 1.15; }
         return d3.symbol().type(type).size(area * scale)();
       }
 
@@ -1802,7 +1904,7 @@
         tooltip.style.left = (event.clientX + 14) + 'px';
         tooltip.style.top = (event.clientY + 14) + 'px';
       }
-      function hideTooltip() {tooltip.style.display = 'none';}
+      function hideTooltip() { tooltip.style.display = 'none'; }
 
       function showLinkTooltip(event, d) {
         tooltip.innerHTML = `<div class="tt-name">${d.count} reference${d.count === 1 ? '' : 's'}${d.types ? ' <span class="tt-kind">(' + d.types.join(', ') + ')</span>' : ''}</div>`;
@@ -1834,9 +1936,9 @@
       }
 
       nodeSel
-        .on('mouseenter', (event, d) => {applyHover(d.id); showNodeTooltip(event, d);})
+        .on('mouseenter', (event, d) => { applyHover(d.id); showNodeTooltip(event, d); })
         .on('mousemove', moveTooltip)
-        .on('mouseleave', () => {applyHover(null); hideTooltip();})
+        .on('mouseleave', () => { applyHover(null); hideTooltip(); })
         .on('click', (event, d) => onClick(d));
 
       const sim = d3.forceSimulation(nodes)
@@ -1861,9 +1963,9 @@
         });
 
       nodeSel.call(d3.drag()
-        .on('start', (e, d) => {if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y;})
-        .on('drag', (e, d) => {d.fx = e.x; d.fy = e.y;})
-        .on('end', (e, d) => {if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null;}));
+        .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+        .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
 
       document.getElementById('search').oninput = (e) => {
         const q = e.target.value.toLowerCase();
@@ -1873,11 +1975,16 @@
     }
 
     document.getElementById('callDepth').addEventListener('change', () => {
+      const depth = Number(document.getElementById('callDepth').value);
+
       if (view.level === 'methods' && view.method) {
-        renderMethodCallGraph(
-          view.method,
-          Number(document.getElementById('callDepth').value)
-        );
+        // Keep Back/Forward history consistent with the selected depth.
+        if (methodHistoryIndex >= 0) {
+          methodHistory[methodHistoryIndex].depth = depth;
+        }
+
+        renderMethodCallGraph(view.method, depth);
+        updateMethodNavigation();
       }
     });
 
